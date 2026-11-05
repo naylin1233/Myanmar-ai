@@ -1,5 +1,7 @@
 
+import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -35,13 +37,18 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int page = 0;
+
   bool loading = false;
+  int cooldownSeconds = 0;
+
+  Timer? cooldownTimer;
 
   final chat = TextEditingController();
   final translation = TextEditingController();
 
   String answer = 'မင်္ဂလာပါ။ MYANMAR AI မှ ကြိုဆိုပါတယ်။';
   String translated = 'ဘာသာပြန်ရလဒ် ဒီမှာပေါ်ပါမယ်။';
+
   String targetLanguage = 'English';
 
   final languages = [
@@ -55,32 +62,81 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    cooldownTimer?.cancel();
     chat.dispose();
     translation.dispose();
     super.dispose();
+  }
+
+  void startCooldown() {
+    cooldownTimer?.cancel();
+
+    setState(() {
+      cooldownSeconds = 45;
+    });
+
+    cooldownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+
+        if (cooldownSeconds <= 1) {
+          timer.cancel();
+          setState(() {
+            cooldownSeconds = 0;
+          });
+        } else {
+          setState(() {
+            cooldownSeconds--;
+          });
+        }
+      },
+    );
   }
 
   Future<String> askAI(String message) async {
     final response = await http
         .post(
           Uri.parse(apiUrl),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'message': message}),
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'message': message,
+          }),
         )
         .timeout(const Duration(seconds: 60));
 
     final data = jsonDecode(response.body);
 
     if (response.statusCode != 200) {
-      throw Exception(data['error'] ?? 'AI Error');
+      throw Exception(
+        data['error'] ?? 'Gemini API Error',
+      );
     }
 
     return data['reply'] ?? 'အဖြေမရရှိပါ။';
   }
 
+  bool isRateLimitError(Object error) {
+    final message = error.toString().toLowerCase();
+
+    return message.contains('rate limit') ||
+        message.contains('too many requests') ||
+        message.contains('429');
+  }
+
   Future<void> sendMessage() async {
     final message = chat.text.trim();
-    if (message.isEmpty || loading) return;
+
+    if (message.isEmpty ||
+        loading ||
+        cooldownSeconds > 0) {
+      return;
+    }
 
     setState(() {
       loading = true;
@@ -89,19 +145,45 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final result = await askAI(message);
+
       if (!mounted) return;
-      setState(() => answer = result);
+
+      setState(() {
+        answer = result;
+      });
     } catch (e) {
       if (!mounted) return;
-      setState(() => answer = 'ချိတ်ဆက်မှု အမှားဖြစ်နေပါတယ်။\n$e');
+
+      if (isRateLimitError(e)) {
+        startCooldown();
+
+        setState(() {
+          answer =
+              'Gemini Free Tier အသုံးပြုမှု ကန့်သတ်ချက် ပြည့်သွားပါတယ်။ '
+              'ခဏစောင့်ပြီး ပြန်မေးပေးပါ။';
+        });
+      } else {
+        setState(() {
+          answer = 'ချိတ်ဆက်မှု အမှားဖြစ်နေပါတယ်။\n$e';
+        });
+      }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted) {
+        setState(() {
+          loading = false;
+        });
+      }
     }
   }
 
   Future<void> translateText() async {
     final text = translation.text.trim();
-    if (text.isEmpty || loading) return;
+
+    if (text.isEmpty ||
+        loading ||
+        cooldownSeconds > 0) {
+      return;
+    }
 
     setState(() {
       loading = true;
@@ -115,12 +197,32 @@ class _HomePageState extends State<HomePage> {
       );
 
       if (!mounted) return;
-      setState(() => translated = result);
+
+      setState(() {
+        translated = result;
+      });
     } catch (e) {
       if (!mounted) return;
-      setState(() => translated = 'အမှားဖြစ်နေပါတယ်။\n$e');
+
+      if (isRateLimitError(e)) {
+        startCooldown();
+
+        setState(() {
+          translated =
+              'Gemini Free Tier ကန့်သတ်ချက် ပြည့်သွားပါတယ်။ '
+              'ခဏစောင့်ပြီး ပြန်စမ်းပါ။';
+        });
+      } else {
+        setState(() {
+          translated = 'ဘာသာပြန်မှု အမှားဖြစ်နေပါတယ်။\n$e';
+        });
+      }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted) {
+        setState(() {
+          loading = false;
+        });
+      }
     }
   }
 
@@ -138,7 +240,9 @@ class _HomePageState extends State<HomePage> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: page,
         onDestinationSelected: (i) {
-          setState(() => page = i);
+          setState(() {
+            page = i;
+          });
         },
         destinations: const [
           NavigationDestination(
@@ -158,7 +262,10 @@ class _HomePageState extends State<HomePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('AI Chat', style: TextStyle(fontSize: 25)),
+        const Text(
+          'AI Chat',
+          style: TextStyle(fontSize: 25),
+        ),
         const SizedBox(height: 20),
         Expanded(
           child: SingleChildScrollView(
@@ -182,8 +289,17 @@ class _HomePageState extends State<HomePage> {
         SizedBox(
           width: double.infinity,
           child: FilledButton(
-            onPressed: loading ? null : sendMessage,
-            child: Text(loading ? 'စောင့်ပါ...' : 'Send'),
+            onPressed:
+                loading || cooldownSeconds > 0
+                    ? null
+                    : sendMessage,
+            child: Text(
+              cooldownSeconds > 0
+                  ? 'စောင့်ပါ (${cooldownSeconds}s)'
+                  : loading
+                      ? 'စဉ်းစားနေပါတယ်...'
+                      : 'Send',
+            ),
           ),
         ),
       ],
@@ -213,16 +329,18 @@ class _HomePageState extends State<HomePage> {
           value: targetLanguage,
           isExpanded: true,
           items: languages.map((language) {
-            return DropdownMenuItem(
+            return DropdownMenuItem<String>(
               value: language,
               child: Text(language),
             );
           }).toList(),
-          onChanged: loading
+          onChanged: loading || cooldownSeconds > 0
               ? null
               : (value) {
                   if (value != null) {
-                    setState(() => targetLanguage = value);
+                    setState(() {
+                      targetLanguage = value;
+                    });
                   }
                 },
         ),
@@ -230,8 +348,17 @@ class _HomePageState extends State<HomePage> {
         SizedBox(
           width: double.infinity,
           child: FilledButton(
-            onPressed: loading ? null : translateText,
-            child: Text(loading ? 'ဘာသာပြန်နေသည်...' : 'ဘာသာပြန်မည်'),
+            onPressed:
+                loading || cooldownSeconds > 0
+                    ? null
+                    : translateText,
+            child: Text(
+              cooldownSeconds > 0
+                  ? 'စောင့်ပါ (${cooldownSeconds}s)'
+                  : loading
+                      ? 'ဘာသာပြန်နေသည်...'
+                      : 'ဘာသာပြန်မည်',
+            ),
           ),
         ),
         const SizedBox(height: 20),
